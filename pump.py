@@ -44,31 +44,19 @@ def log_trade(action, token_data, price, tx_hash):
         json.dump(log_entry, log_file)
         log_file.write("\n")
 
-async def trade(websocket=None, match_string=None, bro_address=None, marry_mode=False, yolo_mode=False):
+async def trade(websocket=None, copy_address=None):
     if websocket is None:
         async with websockets.connect(WSS_ENDPOINT) as websocket:
-            await _trade(websocket, match_string, bro_address, marry_mode, yolo_mode)
+            await _trade(websocket, copy_address)
     else:
-        await _trade(websocket, match_string, bro_address, marry_mode, yolo_mode)
+        await _trade(websocket, copy_address)
 
-async def _trade(websocket, match_string=None, bro_address=None, marry_mode=False, yolo_mode=False):
+async def _trade(websocket, copy_address=None):
     while True:
         print("Waiting for a new token creation...")
         token_data = await listen_for_create_transaction(websocket)
         print("New token created:")
         print(json.dumps(token_data, indent=2))
-
-        if match_string and not (match_string.lower() in token_data['name'].lower() or match_string.lower() in token_data['symbol'].lower()):
-            print(f"Token does not match the criteria '{match_string}'. Skipping...")
-            if not yolo_mode:
-                break
-            continue
-
-        if bro_address and token_data['user'] != bro_address:
-            print(f"Token not created by the specified user '{bro_address}'. Skipping...")
-            if not yolo_mode:
-                break
-            continue
 
         # Save token information to a .txt file in the "trades" directory
         mint_address = token_data['mint']
@@ -99,45 +87,58 @@ async def _trade(websocket, match_string=None, bro_address=None, marry_mode=Fals
         else:
             print("Buy transaction failed.")
 
-        if not marry_mode:
-            print("Waiting for 20 seconds before selling...")
-            await asyncio.sleep(20)
+        # Mint token from your wallet if the mint is from the specified address
+        if copy_address and token_data['user'] == copy_address:
+            print("Minting token from the specified address...")
+            my_wallet_keypair = Keypair.from_secret_key(base58.b58decode(YOUR_PRIVATE_KEY))
+            mint_instruction = spl_token.mint_to(
+                spl_token.MintToParams(
+                    program_id=spl_token.TOKEN_PROGRAM_ID,
+                    mint=mint,
+                    dest=get_associated_token_address(my_wallet_keypair.public_key(), mint),
+                    authority=my_wallet_keypair.public_key(),
+                    amount=1  # Mint 1 token
+                )
+            )
 
-            print(f"Selling tokens with {SELL_SLIPPAGE*100:.1f}% slippage tolerance...")
-            sell_tx_hash = await sell_token(mint, bonding_curve, associated_bonding_curve, SELL_SLIPPAGE)
-            if sell_tx_hash:
-                log_trade("sell", token_data, token_price_sol, str(sell_tx_hash))
-            else:
-                print("Sell transaction failed or no tokens to sell.")
+            transaction = Transaction()
+            transaction.add(mint_instruction)
+            async with AsyncClient(RPC_ENDPOINT) as client:
+                response = await client.send_transaction(transaction, my_wallet_keypair, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
+                if response['result']:
+                    mint_tx_hash = response['result']
+                    log_trade("mint", token_data, token_price_sol, str(mint_tx_hash))
+                else:
+                    print("Mint transaction failed.")
+        
+        print("Waiting for 20 seconds before selling...")
+        await asyncio.sleep(20)
+
+        print(f"Selling tokens with {SELL_SLIPPAGE*100:.1f}% slippage tolerance...")
+        sell_tx_hash = await sell_token(mint, bonding_curve, associated_bonding_curve, SELL_SLIPPAGE)
+        if sell_tx_hash:
+            log_trade("sell", token_data, token_price_sol, str(sell_tx_hash))
         else:
-            print("Marry mode enabled. Skipping sell operation.")
+            print("Sell transaction failed or no tokens to sell.")
 
-        if not yolo_mode:
-            break
-
-async def main(yolo_mode=False, match_string=None, bro_address=None, marry_mode=False):
-    if yolo_mode:
-        while True:
-            try:
-                async with websockets.connect(WSS_ENDPOINT) as websocket:
-                    while True:
-                        try:
-                            await trade(websocket, match_string, bro_address, marry_mode, yolo_mode)
-                        except websockets.exceptions.ConnectionClosed:
-                            print("WebSocket connection closed. Reconnecting...")
-                            break
-                        except Exception as e:
-                            print(f"An error occurred: {e}")
-                        print("Waiting for 5 seconds before looking for the next token...")
-                        await asyncio.sleep(5)
-            except Exception as e:
-                print(f"Connection error: {e}")
-                print("Reconnecting in 5 seconds...")
-                await asyncio.sleep(5)
-    else:
-        # For non-YOLO mode, create a websocket connection and close it after one trade
-        async with websockets.connect(WSS_ENDPOINT) as websocket:
-            await trade(websocket, match_string, bro_address, marry_mode, yolo_mode)
+async def main(copy_address=None):
+    while True:
+        try:
+            async with websockets.connect(WSS_ENDPOINT) as websocket:
+                while True:
+                    try:
+                        await trade(websocket, copy_address)
+                    except websockets.exceptions.ConnectionClosed:
+                        print("WebSocket connection closed. Reconnecting...")
+                        break
+                    except Exception as e:
+                        print(f"An error occurred: {e}")
+                    print("Waiting for 5 seconds before looking for the next token...")
+                    await asyncio.sleep(5)
+        except Exception as e:
+            print(f"Connection error: {e}")
+            print("Reconnecting in 5 seconds...")
+            await asyncio.sleep(5)
 
 async def ping_websocket(websocket):
     while True:
@@ -149,9 +150,6 @@ async def ping_websocket(websocket):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Trade tokens on Solana.")
-    parser.add_argument("--yolo", action="store_true", help="Run in YOLO mode (continuous trading)")
-    parser.add_argument("--match", type=str, help="Only trade tokens with names or symbols matching this string")
-    parser.add_argument("--bro", type=str, help="Only trade tokens created by this user address")
-    parser.add_argument("--marry", action="store_true", help="Only buy tokens, skip selling")
+    parser.add_argument("--copy", type=str, help="Copy minting from specified wallet address")
     args = parser.parse_args()
-    asyncio.run(main(yolo_mode=args.yolo, match_string=args.match, bro_address=args.bro, marry_mode=args.marry))
+    asyncio.run(main(copy_address=args.copy))
