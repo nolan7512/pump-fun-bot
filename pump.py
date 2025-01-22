@@ -8,6 +8,7 @@ import websockets
 import os
 import argparse
 from datetime import datetime
+from time import time
 
 from solana.rpc.async_api import AsyncClient
 from solana.transaction import Transaction
@@ -26,7 +27,7 @@ import spl.token.instructions as spl_token
 from config import *
 
 # Import functions from buy.py
-from buy import get_pump_curve_state, calculate_pump_curve_price, buy_token, listen_for_create_transaction
+from buy import get_pump_curve_state, calculate_pump_curve_price, buy_token
 
 # Import functions from sell.py
 from sell import sell_token
@@ -43,7 +44,7 @@ async def listen_for_interaction(websocket, copy_address):
         "params": [
             {"mentionsAccountOrProgram": str(PUMP_PROGRAM)},
             {
-                "commitment": "confirmed",
+                "commitment": "processed",
                 "encoding": "base64",
                 "showRewards": False,
                 "transactionDetails": "full",
@@ -55,11 +56,11 @@ async def listen_for_interaction(websocket, copy_address):
     print(f"Subscribed to blocks mentioning program: {PUMP_PROGRAM}")
 
     ping_interval = 20
-    last_ping_time = time.time()
+    last_ping_time = time()
 
     while True:
         try:
-            current_time = time.time()
+            current_time = time()
             if current_time - last_ping_time > ping_interval:
                 await websocket.ping()
                 last_ping_time = current_time
@@ -92,11 +93,11 @@ async def listen_for_interaction(websocket, copy_address):
         except asyncio.TimeoutError:
             print("No data received for 30 seconds, sending ping...")
             await websocket.ping()
-            last_ping_time = time.time()
+            last_ping_time = time()
         except websockets.exceptions.ConnectionClosed:
             print("WebSocket connection closed. Reconnecting...")
             raise
-            
+
 def log_trade(action, token_data, price, tx_hash):
     os.makedirs("trades", exist_ok=True)
     log_entry = {
