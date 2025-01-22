@@ -31,6 +31,72 @@ from buy import get_pump_curve_state, calculate_pump_curve_price, buy_token, lis
 # Import functions from sell.py
 from sell import sell_token
 
+async def listen_for_interaction(websocket, copy_address):
+    idl = load_idl('idl/pump_fun_idl.json')
+    buy_discriminator = 16927863322537952870
+    mint_discriminator = 8576854823835016728
+    
+    subscription_message = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "blockSubscribe",
+        "params": [
+            {"mentionsAccountOrProgram": str(PUMP_PROGRAM)},
+            {
+                "commitment": "confirmed",
+                "encoding": "base64",
+                "showRewards": False,
+                "transactionDetails": "full",
+                "maxSupportedTransactionVersion": 0
+            }
+        ]
+    })
+    await websocket.send(subscription_message)
+    print(f"Subscribed to blocks mentioning program: {PUMP_PROGRAM}")
+
+    ping_interval = 20
+    last_ping_time = time.time()
+
+    while True:
+        try:
+            current_time = time.time()
+            if current_time - last_ping_time > ping_interval:
+                await websocket.ping()
+                last_ping_time = current_time
+
+            response = await asyncio.wait_for(websocket.recv(), timeout=30)
+            data = json.loads(response)
+            
+            if 'method' in data and data['method'] == 'blockNotification':
+                if 'params' in data and 'result' in data['params']:
+                    block_data = data['params']['result']
+                    if 'value' in block_data and 'block' in block_data['value']:
+                        block = block_data['value']['block']
+                        if 'transactions' in block:
+                            for tx in block['transactions']:
+                                if isinstance(tx, dict) and 'transaction' in tx:
+                                    tx_data_decoded = base64.b64decode(tx['transaction'][0])
+                                    transaction = VersionedTransaction.from_bytes(tx_data_decoded)
+                                    
+                                    for ix in transaction.message.instructions:
+                                        if str(transaction.message.account_keys[ix.program_id_index]) == str(PUMP_PROGRAM):
+                                            ix_data = bytes(ix.data)
+                                            discriminator = struct.unpack('<Q', ix_data[:8])[0]
+                                            
+                                            if discriminator in [buy_discriminator, mint_discriminator]:
+                                                account_keys = [str(transaction.message.account_keys[index]) for index in ix.accounts]
+                                                if copy_address in account_keys:
+                                                    create_ix = next(instr for instr in idl['instructions'] if instr['name'] == 'create')
+                                                    decoded_args = decode_create_instruction(ix_data, create_ix, account_keys)
+                                                    return decoded_args
+        except asyncio.TimeoutError:
+            print("No data received for 30 seconds, sending ping...")
+            await websocket.ping()
+            last_ping_time = time.time()
+        except websockets.exceptions.ConnectionClosed:
+            print("WebSocket connection closed. Reconnecting...")
+            raise
+            
 def log_trade(action, token_data, price, tx_hash):
     os.makedirs("trades", exist_ok=True)
     log_entry = {
@@ -53,73 +119,41 @@ async def trade(websocket=None, copy_address=None):
 
 async def _trade(websocket, copy_address=None):
     while True:
-        print("Waiting for a new token creation...")
-        token_data = await listen_for_create_transaction(websocket)
-        print("New token created:")
-        print(json.dumps(token_data, indent=2))
-
-        # Save token information to a .txt file in the "trades" directory
-        mint_address = token_data['mint']
-        os.makedirs("trades", exist_ok=True)
-        file_name = os.path.join("trades", f"{mint_address}.txt")
-        with open(file_name, 'w') as file:
-            file.write(json.dumps(token_data, indent=2))
-        print(f"Token information saved to {file_name}")
-
-        print("Waiting for 15 seconds for things to stabilize...")
-        await asyncio.sleep(15)
-
-        mint = Pubkey.from_string(token_data['mint'])
-        bonding_curve = Pubkey.from_string(token_data['bondingCurve'])
-        associated_bonding_curve = Pubkey.from_string(token_data['associatedBondingCurve'])
-
-        # Fetch the token price
-        async with AsyncClient(RPC_ENDPOINT) as client:
-            curve_state = await get_pump_curve_state(client, bonding_curve)
-            token_price_sol = calculate_pump_curve_price(curve_state)
-
-        print(f"Bonding curve address: {bonding_curve}")
-        print(f"Token price: {token_price_sol:.10f} SOL")
-        print(f"Buying {BUY_AMOUNT:.6f} SOL worth of the new token with {BUY_SLIPPAGE*100:.1f}% slippage tolerance...")
-        buy_tx_hash = await buy_token(mint, bonding_curve, associated_bonding_curve, BUY_AMOUNT, BUY_SLIPPAGE)
-        if buy_tx_hash:
-            log_trade("buy", token_data, token_price_sol, str(buy_tx_hash))
-        else:
-            print("Buy transaction failed.")
-
-        # Mint token from your wallet if the mint is from the specified address
-        if copy_address and token_data['user'] == copy_address:
-            print("Minting token from the specified address...")
-            my_wallet_keypair = Keypair.from_secret_key(base58.b58decode(YOUR_PRIVATE_KEY))
-            mint_instruction = spl_token.mint_to(
-                spl_token.MintToParams(
-                    program_id=spl_token.TOKEN_PROGRAM_ID,
-                    mint=mint,
-                    dest=get_associated_token_address(my_wallet_keypair.public_key(), mint),
-                    authority=my_wallet_keypair.public_key(),
-                    amount=1  # Mint 1 token
-                )
-            )
-
-            transaction = Transaction()
-            transaction.add(mint_instruction)
-            async with AsyncClient(RPC_ENDPOINT) as client:
-                response = await client.send_transaction(transaction, my_wallet_keypair, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
-                if response['result']:
-                    mint_tx_hash = response['result']
-                    log_trade("mint", token_data, token_price_sol, str(mint_tx_hash))
-                else:
-                    print("Mint transaction failed.")
+        print(f"Listening for interactions from {copy_address} with pump.fun...")
         
-        print("Waiting for 20 seconds before selling...")
-        await asyncio.sleep(20)
+        # Lắng nghe sự kiện từ ví copy_address
+        token_data = await listen_for_interaction(websocket, copy_address)
+        
+        if token_data:
+            print("Interaction detected:")
+            print(json.dumps(token_data, indent=2))
 
-        print(f"Selling tokens with {SELL_SLIPPAGE*100:.1f}% slippage tolerance...")
-        sell_tx_hash = await sell_token(mint, bonding_curve, associated_bonding_curve, SELL_SLIPPAGE)
-        if sell_tx_hash:
-            log_trade("sell", token_data, token_price_sol, str(sell_tx_hash))
+            # Lấy tên và địa chỉ token
+            mint_address = token_data['mint']
+            token_name = token_data['name']
+
+            print(f"Token name: {token_name}")
+            print(f"Token mint address: {mint_address}")
+
+            mint = Pubkey.from_string(mint_address)
+            bonding_curve = Pubkey.from_string(token_data['bondingCurve'])
+            associated_bonding_curve = Pubkey.from_string(token_data['associatedBondingCurve'])
+
+            # Fetch the token price
+            async with AsyncClient(RPC_ENDPOINT) as client:
+                curve_state = await get_pump_curve_state(client, bonding_curve)
+                token_price_sol = calculate_pump_curve_price(curve_state)
+
+            print(f"Bonding curve address: {bonding_curve}")
+            print(f"Token price: {token_price_sol:.10f} SOL")
+            print(f"Buying {BUY_AMOUNT:.6f} SOL worth of the new token with {BUY_SLIPPAGE*100:.1f}% slippage tolerance...")
+            buy_tx_hash = await buy_token(mint, bonding_curve, associated_bonding_curve, BUY_AMOUNT, BUY_SLIPPAGE)
+            if buy_tx_hash:
+                log_trade("buy", token_data, token_price_sol, str(buy_tx_hash))
+            else:
+                print("Buy transaction failed.")
         else:
-            print("Sell transaction failed or no tokens to sell.")
+            print("No interaction detected from the specified address.")
 
 async def main(copy_address=None):
     while True:
