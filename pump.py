@@ -10,93 +10,31 @@ import argparse
 from datetime import datetime
 from time import time
 
-from solana.rpc.async_api import AsyncClient
-from solana.transaction import Transaction
-from solana.rpc.commitment import Confirmed
-from solana.rpc.types import TxOpts
-
+# Đảm bảo import đúng cách
 from solders.pubkey import Pubkey
-from solders.keypair import Keypair
-from solders.instruction import Instruction, AccountMeta
-from solders.system_program import TransferParams, transfer
-from solders.transaction import VersionedTransaction
+# from solders.keypair import Keypair
+# from solders.instruction import Instruction, AccountMeta
+# from solders.system_program import transfer, TransferParams
+# from solders.transaction import VersionedTransaction
+# from solders.transaction import Transaction
+from solana.rpc.async_api import AsyncClient
+from solana.rpc.commitment import Confirmed
+# from solana.rpc.types import TxOpts
+# from solana.rpc.api import Client
 
-from spl.token.instructions import get_associated_token_address
-import spl.token.instructions as spl_token
+# from solana.transaction import Transaction  # Dùng Transaction từ thư viện mới
+
+# from spl.token.instructions import get_associated_token_address
+# import spl.token.instructions as spl_token
 
 from config import *
 
 # Import functions from buy.py
-from buy import get_pump_curve_state, calculate_pump_curve_price, buy_token
+from buy import get_pump_curve_state, calculate_pump_curve_price, buy_token, listen_for_interaction
 
 # Import functions from sell.py
-from sell import sell_token
+# from sell import sell_token
 
-async def listen_for_interaction(websocket, copy_address):
-    idl = load_idl('idl/pump_fun_idl.json')
-    buy_discriminator = 16927863322537952870
-    mint_discriminator = 8576854823835016728
-    
-    subscription_message = json.dumps({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "blockSubscribe",
-        "params": [
-            {"mentionsAccountOrProgram": str(PUMP_PROGRAM)},
-            {
-                "commitment": "processed",
-                "encoding": "base64",
-                "showRewards": False,
-                "transactionDetails": "full",
-                "maxSupportedTransactionVersion": 0
-            }
-        ]
-    })
-    await websocket.send(subscription_message)
-    print(f"Subscribed to blocks mentioning program: {PUMP_PROGRAM}")
-
-    ping_interval = 20
-    last_ping_time = time()
-
-    while True:
-        try:
-            current_time = time()
-            if current_time - last_ping_time > ping_interval:
-                await websocket.ping()
-                last_ping_time = current_time
-
-            response = await asyncio.wait_for(websocket.recv(), timeout=30)
-            data = json.loads(response)
-            
-            if 'method' in data and data['method'] == 'blockNotification':
-                if 'params' in data and 'result' in data['params']:
-                    block_data = data['params']['result']
-                    if 'value' in block_data and 'block' in block_data['value']:
-                        block = block_data['value']['block']
-                        if 'transactions' in block:
-                            for tx in block['transactions']:
-                                if isinstance(tx, dict) and 'transaction' in tx:
-                                    tx_data_decoded = base64.b64decode(tx['transaction'][0])
-                                    transaction = VersionedTransaction.from_bytes(tx_data_decoded)
-                                    
-                                    for ix in transaction.message.instructions:
-                                        if str(transaction.message.account_keys[ix.program_id_index]) == str(PUMP_PROGRAM):
-                                            ix_data = bytes(ix.data)
-                                            discriminator = struct.unpack('<Q', ix_data[:8])[0]
-                                            
-                                            if discriminator in [buy_discriminator, mint_discriminator]:
-                                                account_keys = [str(transaction.message.account_keys[index]) for index in ix.accounts]
-                                                if copy_address in account_keys:
-                                                    create_ix = next(instr for instr in idl['instructions'] if instr['name'] == 'create')
-                                                    decoded_args = decode_create_instruction(ix_data, create_ix, account_keys)
-                                                    return decoded_args
-        except asyncio.TimeoutError:
-            print("No data received for 30 seconds, sending ping...")
-            await websocket.ping()
-            last_ping_time = time()
-        except websockets.exceptions.ConnectionClosed:
-            print("WebSocket connection closed. Reconnecting...")
-            raise
 
 def log_trade(action, token_data, price, tx_hash):
     os.makedirs("trades", exist_ok=True)
@@ -111,11 +49,13 @@ def log_trade(action, token_data, price, tx_hash):
         json.dump(log_entry, log_file)
         log_file.write("\n")
 
+
 async def trade(websocket=None, copy_address=None):
     if websocket is None:
-        async with websockets.connect(WSS_ENDPOINT) as websocket:
+        async with websockets.connect(WSS_ENDPOINT, timeout=20) as websocket:
             await _trade(websocket, copy_address)
     else:
+        print("Wss Connected ==> Trade Start")
         await _trade(websocket, copy_address)
 
 async def _trade(websocket, copy_address=None):
@@ -159,21 +99,23 @@ async def _trade(websocket, copy_address=None):
 async def main(copy_address=None):
     while True:
         try:
-            async with websockets.connect(WSS_ENDPOINT) as websocket:
+            print(f"Attempting to connect to WebSocket at {WSS_ENDPOINT}...")
+            async with websockets.connect(WSS_ENDPOINT , timeout=20) as websocket:
+                print("Connected to WebSocket.")
                 while True:
                     try:
                         await trade(websocket, copy_address)
-                    except websockets.exceptions.ConnectionClosed:
-                        print("WebSocket connection closed. Reconnecting...")
+                    except websockets.exceptions.ConnectionClosed as e:
+                        print(f"WebSocket closed with code {e.code} and reason: {e.reason}")
                         break
                     except Exception as e:
-                        print(f"An error occurred: {e}")
+                        print(f"An error occurred during trade: {e}")
                     print("Waiting for 5 seconds before looking for the next token...")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(5)        
         except Exception as e:
-            print(f"Connection error: {e}")
-            print("Reconnecting in 5 seconds...")
-            await asyncio.sleep(5)
+            print(f"Unexpected error: {e.__class__.__name__}: {e}")
+            print("Reconnecting in 6 seconds...")
+            await asyncio.sleep(6)
 
 async def ping_websocket(websocket):
     while True:
