@@ -168,10 +168,15 @@ def decode_create_instruction(ix_data, ix_def, accounts):
 
     for arg in ix_def['args']:
         if arg['type'] == 'string':
-            length = struct.unpack_from('<I', ix_data, offset)[0]
-            offset += 4
-            value = ix_data[offset:offset+length].decode('utf-8')
-            offset += length
+            try:
+                length = struct.unpack_from('<I', ix_data, offset)[0]
+                offset += 4
+                value = ix_data[offset:offset+length].decode('utf-8')
+                offset += length
+            except UnicodeDecodeError as e:
+                print(f"Error decoding string: {e}")
+                value = ix_data[offset:offset+length].hex()  # Fallback to hex representation
+                offset += length
         elif arg['type'] == 'publicKey':
             value = base64.b64encode(ix_data[offset:offset+32]).decode('utf-8')
             offset += 32
@@ -185,7 +190,7 @@ def decode_create_instruction(ix_data, ix_def, accounts):
     args['bondingCurve'] = str(accounts[2])
     args['associatedBondingCurve'] = str(accounts[3])
     args['user'] = str(accounts[7])
-
+    
     return args
 async def listen_for_interaction(websocket, copy_address):
     idl = load_idl('idl/pump_fun_idl.json')
@@ -223,28 +228,41 @@ async def listen_for_interaction(websocket, copy_address):
             response = await asyncio.wait_for(websocket.recv(), timeout=30)
             data = json.loads(response)
             
-            if 'method' in data and data['method'] == 'blockNotification':              
+            if 'method' in data and data['method'] == 'blockNotification':
                 if 'params' in data and 'result' in data['params']:
                     block_data = data['params']['result']
                     if 'value' in block_data and 'block' in block_data['value']:
                         block = block_data['value']['block']
                         if 'transactions' in block:
-                            for tx in block['transactions']:                               
+                            for tx in block['transactions']:
                                 if isinstance(tx, dict) and 'transaction' in tx:
                                     tx_data_decoded = base64.b64decode(tx['transaction'][0])
-                                    transaction = VersionedTransaction.from_bytes(tx_data_decoded)                                   
+                                    transaction = VersionedTransaction.from_bytes(tx_data_decoded)
+
                                     for ix in transaction.message.instructions:
-                                        if str(transaction.message.account_keys[ix.program_id_index]) == str(PUMP_PROGRAM):
-                                            ix_data = bytes(ix.data)
-                                            discriminator = struct.unpack('<Q', ix_data[:8])[0]
+                                        try:
+                                            program_id_index = ix.program_id_index
+                                            if program_id_index >= len(transaction.message.account_keys):
+                                                print(f"program_id_index out of range: {program_id_index}")
+                                                continue
                                             
-                                            if discriminator in [buy_discriminator, mint_discriminator]:
-                                                account_keys = [str(transaction.message.account_keys[index]) for index in ix.accounts]
-                                                if str(copy_address) in account_keys:
-                                                    print(f"Found interaction from copy_address: {copy_address}")
-                                                    create_ix = next(instr for instr in idl['instructions'] if instr['name'] == 'create')
-                                                    decoded_args = decode_create_instruction(ix_data, create_ix, account_keys)
-                                                    return decoded_args
+                                            if str(transaction.message.account_keys[program_id_index]) == str(PUMP_PROGRAM):
+                                                ix_data = bytes(ix.data)
+                                                discriminator = struct.unpack('<Q', ix_data[:8])[0]
+
+                                                if discriminator in [buy_discriminator, mint_discriminator]:
+                                                    account_keys = [str(transaction.message.account_keys[index]) for index in ix.accounts if index < len(transaction.message.account_keys)]                                                  
+                                                    if str(copy_address) in account_keys:
+                                                        print(f"Found interaction from copy_address: {copy_address}")
+                                                        create_ix = next(instr for instr in idl['instructions'] if instr['name'] == 'create')
+                                                        print(f"data create_ix: {create_ix}")
+                                                        decoded_args = decode_create_instruction(ix_data, create_ix, account_keys)
+                                                        print(f"data decoded_args: {decoded_args}")
+                                                        return decoded_args
+                                        except IndexError as e:
+                                            print(f"IndexError: {e}")
+                                            print(f"Instruction: {ix}")
+                                            print(f"Transaction message account keys: {transaction.message.account_keys}")
         except asyncio.TimeoutError:
             print("No data received for 30 seconds, sending ping...")
             await websocket.ping()

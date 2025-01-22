@@ -64,7 +64,7 @@ async def _trade(websocket, copy_address=None):
         
         # Lắng nghe sự kiện từ ví copy_address
         token_data = await listen_for_interaction(websocket, copy_address)
-        
+        print(f"_trade token_data: {token_data}")
         if token_data:
             print("Interaction detected:")
             print(json.dumps(token_data, indent=2))
