@@ -8,6 +8,8 @@ import sys
 import os
 import argparse
 from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
+from solders.transaction import Transaction
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import (
@@ -52,7 +54,10 @@ def parse_create_instruction(data):
         ('uri', 'string'),
         ('mint', 'publicKey'),
         ('bondingCurve', 'publicKey'),
+        ('associatedBondingCurve ', 'publicKey'),
+        ('associatedUser ', 'publicKey'),       
         ('user', 'publicKey'),
+        ('source', 'publicKey'),
     ]
 
     try:
@@ -83,7 +88,7 @@ def print_transaction_details(log_data):
             except:
                 pass
 
-async def listen_for_new_tokens(websocket, copy_address):
+async def listen_for_copy(websocket, copy_address):
     while True:
         try:
             async with websockets.connect(WSS_ENDPOINT) as websocket:
@@ -107,25 +112,32 @@ async def listen_for_new_tokens(websocket, copy_address):
                     try:
                         response = await websocket.recv()
                         data = json.loads(response)
-
+                        print(f"DATA data: {data}")
                         if 'method' in data and data['method'] == 'logsNotification':
                             log_data = data['params']['result']['value']
                             logs = log_data.get('logs', [])
                             
-                            if any("Program log: Instruction: Create" in log for log in logs):
+                            if any("Program log: Instruction: Buy" in log for log in logs):
                                 for log in logs:
                                     if "Program data:" in log:
                                         try:
                                             encoded_data = log.split(": ")[1]
                                             decoded_data = base64.b64decode(encoded_data)
+                                            print(f"Listen decoded_data: {decoded_data}")
+                                            
                                             parsed_data = parse_create_instruction(decoded_data)
+                                            print(f"Listen parsed_data: {parsed_data}")
+                                            
+                                            temp_address = Pubkey.from_string(str(copy_address))
+                                            print(f"Listen temp_address: {temp_address}")
                                             if parsed_data and 'name' in parsed_data:
-                                                if copy_address and parsed_data['user'] != copy_address:
+                                                if (parsed_data['associatedBondingCurve'] != temp_address or
+                                                    parsed_data['user'] != temp_address or
+                                                    parsed_data['mint'] != temp_address):
+                                                    print(f"Different copy_address: {copy_address}")
                                                     continue  # Skip if it doesn't match the copy address
 
-                                                print("Signature:", log_data.get('signature'))
-                                                for key, value in parsed_data.items():
-                                                    print(f"{key}: {value}")
+                                                print(f"Yesssssssssssssssssss copy_address found: {copy_address}")
                                                 
                                                 # Calculate associated bonding curve
                                                 mint = Pubkey.from_string(parsed_data['mint'])
@@ -145,7 +157,24 @@ async def listen_for_new_tokens(websocket, copy_address):
             print(f"Connection error: {e}")
             print("Reconnecting in 5 seconds...")
             await asyncio.sleep(5)
+            
+def get_transaction_details(signature):
+    url = "https://api.mainnet-beta.solana.com"  # Solana mainnet endpoint
+    headers = {"Content-Type": "application/json"}
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [signature, "json"]
+    })
 
+    response = requests.post(url, headers=headers, data=payload)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print(f"Failed to fetch transaction details: {response.status_code}")
+        return None
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Listen for new tokens and filter by copy address")
     parser.add_argument("--copy", type=str, help="Copy interactions from specified wallet address")

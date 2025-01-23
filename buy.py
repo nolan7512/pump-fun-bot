@@ -25,10 +25,22 @@ import spl.token.instructions as spl_token
 from config import *
 
 from construct import Struct, Int64ul, Flag
+from dotenv import load_dotenv
+import os
+import logging
+
+
+
+# Configure logging
+logging.basicConfig(filename='log1.txt', level=logging.INFO, format='%(asctime)s - %(message)s')
 
 # Here and later all the discriminators are precalculated. See learning-examples/discriminator.py
 EXPECTED_DISCRIMINATOR = struct.pack("<Q", 6966180631402821399)
 TOKEN_DECIMALS = 6
+
+load_dotenv()
+
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 
 class BondingCurveState:
     _STRUCT = Struct(
@@ -168,15 +180,10 @@ def decode_create_instruction(ix_data, ix_def, accounts):
 
     for arg in ix_def['args']:
         if arg['type'] == 'string':
-            try:
-                length = struct.unpack_from('<I', ix_data, offset)[0]
-                offset += 4
-                value = ix_data[offset:offset+length].decode('utf-8')
-                offset += length
-            except UnicodeDecodeError as e:
-                print(f"Error decoding string: {e}")
-                value = ix_data[offset:offset+length].hex()  # Fallback to hex representation
-                offset += length
+            length = struct.unpack_from('<I', ix_data, offset)[0]
+            offset += 4
+            value = ix_data[offset:offset+length].decode('utf-8')
+            offset += length
         elif arg['type'] == 'publicKey':
             value = base64.b64encode(ix_data[offset:offset+32]).decode('utf-8')
             offset += 32
@@ -190,7 +197,29 @@ def decode_create_instruction(ix_data, ix_def, accounts):
     args['bondingCurve'] = str(accounts[2])
     args['associatedBondingCurve'] = str(accounts[3])
     args['user'] = str(accounts[7])
-    
+
+    return args
+def decode_instruction(ix_data, ix_def):
+    args = {}
+    offset = 8  # Skip 8-byte discriminator
+
+    for arg in ix_def['args']:
+        if arg['type'] == 'u64':
+            value = struct.unpack_from('<Q', ix_data, offset)[0]
+            offset += 8
+        elif arg['type'] == 'publicKey':
+            value = ix_data[offset:offset+32].hex()
+            offset += 32
+        elif arg['type'] == 'string':
+            length = struct.unpack_from('<I', ix_data, offset)[0]
+            offset += 4
+            value = ix_data[offset:offset+length].decode('utf-8')
+            offset += length
+        else:
+            raise ValueError(f"Unsupported type: {arg['type']}")
+        
+        args[arg['name']] = value
+
     return args
 async def listen_for_interaction(websocket, copy_address):
     idl = load_idl('idl/pump_fun_idl.json')
@@ -212,6 +241,7 @@ async def listen_for_interaction(websocket, copy_address):
             }
         ]
     })
+      
     await websocket.send(subscription_message)
     print(f"Subscribed to blocks mentioning program: {PUMP_PROGRAM}")
 
@@ -227,6 +257,7 @@ async def listen_for_interaction(websocket, copy_address):
 
             response = await asyncio.wait_for(websocket.recv(), timeout=30)
             data = json.loads(response)
+            # print(f"DATA ============: {data}")
             
             if 'method' in data and data['method'] == 'blockNotification':
                 if 'params' in data and 'result' in data['params']:
@@ -237,8 +268,9 @@ async def listen_for_interaction(websocket, copy_address):
                             for tx in block['transactions']:
                                 if isinstance(tx, dict) and 'transaction' in tx:
                                     tx_data_decoded = base64.b64decode(tx['transaction'][0])
+                                    # lấy ra từng transaction trong 1 list transactions , chỉ cần tìm owner or so sánh với copy address và Pump program
                                     transaction = VersionedTransaction.from_bytes(tx_data_decoded)
-
+                                   
                                     for ix in transaction.message.instructions:
                                         try:
                                             program_id_index = ix.program_id_index
@@ -249,15 +281,34 @@ async def listen_for_interaction(websocket, copy_address):
                                             if str(transaction.message.account_keys[program_id_index]) == str(PUMP_PROGRAM):
                                                 ix_data = bytes(ix.data)
                                                 discriminator = struct.unpack('<Q', ix_data[:8])[0]
-
-                                                if discriminator in [buy_discriminator, mint_discriminator]:
+                                                logging.info(f"=====DATA FINALLY===== {tx_data_decoded}")
+                                                # if discriminator in [buy_discriminator, mint_discriminator]:
+                                                if discriminator == buy_discriminator:
                                                     account_keys = [str(transaction.message.account_keys[index]) for index in ix.accounts if index < len(transaction.message.account_keys)]                                                  
                                                     if str(copy_address) in account_keys:
+                                                        print(f"=======================================DATA=========================: {data}")
+                                                        print(f"=======================================BLOCK=========================: {block}")
+                                                        print(f"=====DATA transaction: {transaction}")
+                                                        print(f"=====DATA transaction.message.instructions: {transaction.message.instructions}")
                                                         print(f"Found interaction from copy_address: {copy_address}")
-                                                        create_ix = next(instr for instr in idl['instructions'] if instr['name'] == 'create')
+                                                        # logging.info(f"=======================================DATA=========================: {data}")
+                                                        # logging.info(f"=======================================BLOCK=========================: {block}")                                                      
+                                                        # logging.info(f"=====DATA transaction===== {transaction}")
+                                                        # logging.info(f"=====DATA transaction.message.instructions===== {transaction.message.instructions}")
+                                                        # logging.info(f"=====DATA ix_data===== {ix_data}")                                                       
+                                                        # logging.info(f"Found interaction from copy_address: {copy_address}")
+                                                        create_ix = next(instr for instr in idl['instructions'] if instr['name'] == 'buy')
                                                         print(f"data create_ix: {create_ix}")
+                                                        print(f"data ix_data: {ix_data}")
+                                                        
+
+                                                        
                                                         decoded_args = decode_create_instruction(ix_data, create_ix, account_keys)
                                                         print(f"data decoded_args: {decoded_args}")
+                                                        
+                                                        decode_instruction_args = decode_instruction(ix_data, create_ix)
+                                                        print(f"data decode_instruction_args: {decode_instruction_args}")
+                                                        
                                                         return decoded_args
                                         except IndexError as e:
                                             print(f"IndexError: {e}")

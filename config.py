@@ -24,4 +24,4 @@ RPC_ENDPOINT = "https://solana-mainnet.core.chainstack.com/867775ea93322a69e2732
 WSS_ENDPOINT = "wss://solana-mainnet.core.chainstack.com/867775ea93322a69e273234646b95d03"
 
 #Private key
-PRIVATE_KEY = "293ohpAYsfRKc4jz16JnqM4pRYYrJUawetZWezFBtyupiK2bWMzZ3uctAudBzHhQ8GJxjCAd8QqwjynJAXcssEn3"
+# PRIVATE_KEY = "293ohpAYsfRKc4jz16JnqM4pRYYrJUawetZWezFBtyupiK2bWMzZ3uctAudBzHhQ8GJxjCAd8QqwjynJAXcssEn3"

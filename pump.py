@@ -32,7 +32,10 @@ from config import *
 # Import functions from buy.py
 from buy import get_pump_curve_state, calculate_pump_curve_price, buy_token, listen_for_interaction
 
-from listen import listen_for_new_tokens
+from listen import listen_for_copy
+
+
+from compute_associated_bonding_curve import get_bonding_curve_address, find_associated_bonding_curve
 
 # Import functions from sell.py
 # from sell import sell_token
@@ -65,11 +68,11 @@ async def _trade(websocket, copy_address=None):
         print(f"Listening for interactions from {copy_address} with pump.fun...")
         
         # Lắng nghe sự kiện từ ví copy_address
-        # token_data = await listen_for_interaction(websocket, copy_address)
-        # print(f"_trade token_data : {token_data}")
+        token_data = await listen_for_interaction(websocket, copy_address)
+        print(f"_trade token_data : {token_data}")
 
-        token_data = await listen_for_new_tokens(websocket, copy_address)
-        print(f"_trade listen_data : {token_data}")
+        # token_data = await listen_for_copy(websocket, copy_address)
+        # print(f"_trade listen_data : {token_data}")
 
         if token_data:
             print("Interaction detected:")
@@ -82,19 +85,33 @@ async def _trade(websocket, copy_address=None):
             print(f"Token name: {token_name}")
             print(f"Token mint address: {mint_address}")
 
-            mint = Pubkey.from_string(mint_address)
-            bonding_curve = Pubkey.from_string(token_data['bondingCurve'])
-            associated_bonding_curve = Pubkey.from_string(token_data['associatedBondingCurve'])
+            mint = Pubkey.from_string(mint_address)     
+             
+            bonding_curve_address, bump = get_bonding_curve_address(mint, PUMP_PROGRAM)
+            
+            # Calculate the associated bonding curve
+            associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
+            
+            print("\nResults:")
+            print("-" * 50)
+            print(f"Token Mint:              {mint}")
+            print(f"Bonding Curve:           {bonding_curve_address}")
+            print(f"Associated Bonding Curve: {associated_bonding_curve}")
+            print(f"Bonding Curve Bump:      {bump}")
+            print("-" * 50)
+            
+            # bonding_curve = Pubkey.from_string(token_data['bondingCurve'])
+            # associated_bonding_curve = Pubkey.from_string(token_data['associatedBondingCurve'])
 
             # Fetch the token price
             async with AsyncClient(RPC_ENDPOINT) as client:
-                curve_state = await get_pump_curve_state(client, bonding_curve)
+                curve_state = await get_pump_curve_state(client, bonding_curve_address)
                 token_price_sol = calculate_pump_curve_price(curve_state)
 
-            print(f"Bonding curve address: {bonding_curve}")
+            print(f"Bonding curve address: {bonding_curve_address}")
             print(f"Token price: {token_price_sol:.10f} SOL")
             print(f"Buying {BUY_AMOUNT:.6f} SOL worth of the new token with {BUY_SLIPPAGE*100:.1f}% slippage tolerance...")
-            buy_tx_hash = await buy_token(mint, bonding_curve, associated_bonding_curve, BUY_AMOUNT, BUY_SLIPPAGE)
+            buy_tx_hash = await buy_token(mint, bonding_curve_address, associated_bonding_curve, BUY_AMOUNT, BUY_SLIPPAGE)
             if buy_tx_hash:
                 log_trade("buy", token_data, token_price_sol, str(buy_tx_hash))
             else:
