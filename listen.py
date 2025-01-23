@@ -33,7 +33,7 @@ def find_associated_bonding_curve(mint: Pubkey, bonding_curve: Pubkey) -> Pubkey
     return derived_address
 
 # Load the IDL JSON file
-with open('../idl/pump_fun_idl.json', 'r') as f:
+with open('idl/pump_fun_idl.json', 'r') as f:
     idl = json.load(f)
 
 # Extract the "create" instruction definition
