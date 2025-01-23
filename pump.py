@@ -32,6 +32,8 @@ from config import *
 # Import functions from buy.py
 from buy import get_pump_curve_state, calculate_pump_curve_price, buy_token, listen_for_interaction
 
+from listen import listen_for_new_tokens
+
 # Import functions from sell.py
 # from sell import sell_token
 
@@ -63,8 +65,12 @@ async def _trade(websocket, copy_address=None):
         print(f"Listening for interactions from {copy_address} with pump.fun...")
         
         # Lắng nghe sự kiện từ ví copy_address
-        token_data = await listen_for_interaction(websocket, copy_address)
-        print(f"_trade token_data: {token_data}")
+        # token_data = await listen_for_interaction(websocket, copy_address)
+        # print(f"_trade token_data : {token_data}")
+
+        token_data = await listen_for_new_tokens(websocket, copy_address)
+        print(f"_trade listen_data : {token_data}")
+
         if token_data:
             print("Interaction detected:")
             print(json.dumps(token_data, indent=2))
